@@ -21,6 +21,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/iam"
@@ -46,6 +47,9 @@ type Subscription struct {
 	ReceiveSettings ReceiveSettings
 
 	mu            sync.Mutex
+
+	count int32
+
 	receiveActive bool
 }
 
@@ -495,6 +499,10 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 	return group.Wait()
 }
 
+func (s *Subscription) AlterControlFlux(val int32) {
+	atomic.AddInt32(&s.count, val)
+}
+
 func (s *Subscription) receive(ctx context.Context, po *pullOptions, fc *flowController, f func(context.Context, *Message)) error {
 	// Cancel a sub-context when we return, to kick the context-aware callbacks
 	// and the goroutine below.
@@ -527,7 +535,19 @@ func (s *Subscription) receive(ctx context.Context, po *pullOptions, fc *flowCon
 		if po.synchronous {
 			if po.maxPrefetch < 0 {
 				// If there is no limit on the number of messages to pull, use a reasonable default.
-				maxToPull = 1000
+				// maxToPull = 1000
+
+				//Objenious Code
+				inProcessMessageNumber := atomic.LoadInt32(&s.count)
+				maxToPull = 10 - inProcessMessageNumber
+				if maxToPull <= 0 {
+					// Wait for some callbacks to finish.
+					if err := gax.Sleep(ctx, synchronousWaitTime); err != nil {
+						// Return nil if the context is done, not err.
+						return nil
+					}
+					continue
+				}
 			} else {
 				// Limit the number of messages in memory to MaxOutstandingMessages
 				// (here, po.maxPrefetch). For each message currently in memory, we have
